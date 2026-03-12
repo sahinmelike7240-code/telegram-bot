@@ -13,12 +13,12 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATA_FILE = "bot_data.json"
 
 tweet_regex = re.compile(
     r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 SPAM_LIMIT = 5
@@ -33,10 +33,19 @@ def load_data():
             "daily_users": {},
             "pending_approvals": {},
             "user_stats": {},
-            "spam": {}
+            "spam": {},
         }
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "shared_links": {},
+            "daily_users": {},
+            "pending_approvals": {},
+            "user_stats": {},
+            "spam": {},
+        }
 
 
 def save_data(data):
@@ -75,7 +84,7 @@ def normalize_link(text):
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member = await context.bot.get_chat_member(
         update.effective_chat.id,
-        update.effective_user.id
+        update.effective_user.id,
     )
     return member.status in ["administrator", "creator"]
 
@@ -89,12 +98,14 @@ async def safe_delete(message):
 
 def clean_old_daily_data(data, reset_key):
     data["daily_users"] = {
-        uid: info for uid, info in data.get("daily_users", {}).items()
+        uid: info
+        for uid, info in data.get("daily_users", {}).items()
         if info.get("reset_key") == reset_key
     }
 
     data["pending_approvals"] = {
-        uid: info for uid, info in data.get("pending_approvals", {}).items()
+        uid: info
+        for uid, info in data.get("pending_approvals", {}).items()
         if info.get("reset_key") == reset_key
     }
 
@@ -107,10 +118,12 @@ def get_today_previous_links(data, user_id, reset_key):
             and info.get("reset_key") == reset_key
             and info.get("user_id") != user_id
         ):
-            items.append({
-                "link": link,
-                "created_at": info.get("created_at", "")
-            })
+            items.append(
+                {
+                    "link": link,
+                    "created_at": info.get("created_at", ""),
+                }
+            )
 
     items.sort(key=lambda x: x["created_at"])
     return items
@@ -131,7 +144,7 @@ def ensure_user_stats(data, user):
             "name": user.full_name,
             "username": user.username or "",
             "total_shares": 0,
-            "last_share_at": ""
+            "last_share_at": "",
         }
 
 
@@ -151,7 +164,7 @@ def check_and_update_spam(data, user_id):
     if user_id not in spam_data:
         spam_data[user_id] = {
             "attempts": [],
-            "mute_until": ""
+            "mute_until": "",
         }
 
     entry = spam_data[user_id]
@@ -193,10 +206,11 @@ def check_and_update_spam(data, user_id):
 async def short_warn(chat, context, text, seconds=5):
     try:
         warn = await chat.send_message(text)
-        context.job_queue.run_once(
-            lambda ctx: ctx.bot.delete_message(chat.id, warn.message_id),
-            seconds
-        )
+        if context.job_queue:
+            context.job_queue.run_once(
+                lambda ctx: ctx.bot.delete_message(chat.id, warn.message_id),
+                seconds,
+            )
     except Exception:
         pass
 
@@ -219,7 +233,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cleanup_legacy_shared_links(data)
     clean_old_daily_data(data, reset_key)
 
-    # Spam kontrol
     muted, remain = check_and_update_spam(data, user_id)
     save_data(data)
 
@@ -229,7 +242,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await short_warn(chat, context, f"Çok fazla hatalı işlem yaptın. {mins} dakika bekle", 5)
         return
 
-    # Medya ve metin dışı içerikleri sil
     if (
         message.photo
         or message.video
@@ -244,7 +256,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or message.location
     ):
         await safe_delete(message)
-        
         return
 
     text = (message.text or "").strip()
@@ -255,16 +266,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = normalize_link(text)
     if not link:
         await safe_delete(message)
-     
         return
 
-    # Aynı link tekrar atılamaz
     if link in data["shared_links"]:
         await safe_delete(message)
-        
         return
 
-    # Kullanıcı bu döngüde zaten paylaşım yaptıysa sil
     if user_id in data["daily_users"]:
         await safe_delete(message)
         await short_warn(chat, context, "09:00 sonrası günde sadece 1 link paylaşabilirsin", 5)
@@ -272,7 +279,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     previous_links = get_today_previous_links(data, user_id, reset_key)
 
-    # Önceki linkler varsa önce onay zorunlu
     if previous_links and user_id not in data["pending_approvals"]:
         await safe_delete(message)
 
@@ -281,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "approved": False,
             "pending_link": link,
             "chat_id": chat.id,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
         }
         save_data(data)
 
@@ -289,7 +295,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Bugün 09:00'dan sonra senden önce {len(previous_links)} paylaşım yapılmış",
             "",
             "Önce bunları gör:",
-            ""
+            "",
         ]
 
         for i, item in enumerate(previous_links[:15], start=1):
@@ -302,14 +308,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_lines.append("")
         text_lines.append("Bunları gördüysen aşağıdaki butona bas sonra kendi linkini tekrar gönder")
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Gördüm Onaylıyorum", callback_data=f"approve_{user_id}")]
-        ])
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Gördüm Onaylıyorum", callback_data=f"approve_{user_id}")]]
+        )
 
         await chat.send_message("\n".join(text_lines), reply_markup=keyboard)
         return
 
-    # Onay vermeden link gönderemez
     if previous_links:
         approval = data["pending_approvals"].get(user_id)
         if not approval or not approval.get("approved"):
@@ -317,7 +322,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await short_warn(chat, context, "Önce bugün paylaşılan linkleri görüp onay vermelisin", 5)
             return
 
-    # Linki kaydet
     data["shared_links"][link] = {
         "user_id": user_id,
         "username": user.username or "",
@@ -325,12 +329,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chat_id": chat.id,
         "message_id": message.message_id,
         "created_at": datetime.now().isoformat(),
-        "reset_key": reset_key
+        "reset_key": reset_key,
     }
 
     data["daily_users"][user_id] = {
         "reset_key": reset_key,
-        "shared_at": datetime.now().isoformat()
+        "shared_at": datetime.now().isoformat(),
     }
 
     register_share_stat(data, user)
@@ -389,7 +393,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_users = sorted(
         data.get("user_stats", {}).values(),
         key=lambda x: x.get("total_shares", 0),
-        reverse=True
+        reverse=True,
     )[:10]
 
     lines = [
@@ -398,7 +402,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Toplam paylaşılan benzersiz link: {total_count}",
         f"Bugün 09:00 sonrası paylaşılan link: {today_count}",
         "",
-        "En çok paylaşım yapanlar:"
+        "En çok paylaşım yapanlar:",
     ]
 
     if not top_users:
@@ -456,5 +460,22 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
 
+bunu ekledim dostum şimdi ne yapmam gerekiyor 1 dk da özetle 2 uzun uzun yazma ! 
+
+::contentReference[oaicite:1]{index=1}
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("today", today_command))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.ALL, handle_message))
+
+    print("Bot çalışıyor...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
     main()
