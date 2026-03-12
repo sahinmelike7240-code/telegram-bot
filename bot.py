@@ -3,6 +3,8 @@ import os
 import re
 import asyncio
 from datetime import datetime, time
+import pytz # Saat dilimi için
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -12,10 +14,11 @@ from telegram.ext import (
     CommandHandler,
 )
 
-# Ortam değişkenleri
+# Ayarlar
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATA_FILE = "bot_data.json"
 GROUP_ID = None 
+TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 
 tweet_regex = re.compile(
     r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$",
@@ -41,15 +44,12 @@ async def send_rules_periodically(context: ContextTypes.DEFAULT_TYPE):
     if GROUP_ID:
         rules_text = (
             "📢 **KURAL HATIRLATMASI**\n\n"
-            "▪️ Takip zorunludur! (Yönetim kontrol ediyor)\n"
+            "▪️ Takip zorunludur!\n"
             "▪️ Günde 2 link hakkı (08:00 - 02:00 arası).\n"
             "▪️ Önceki linklere yorum/beğeni/kaydetme şart.\n"
-            "▪️ Küfür ve alakasız sohbet kesinlikle yasaktır."
+            "▪️ Küfür ve alakasız sohbet yasaktır."
         )
         await context.bot.send_message(chat_id=GROUP_ID, text=rules_text)
-
-async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **X ETKİLEŞİM GRUBU KURALLARI**\n\n▪️ Takip zorunlu.\n▪️ Günde 2 gönderi sınırı.\n▪️ Destek (yorum/beğeni) zorunlu.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GROUP_ID
@@ -58,11 +58,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not message or not user: return
 
+    # Admin muafiyeti
     member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
     if member.status in ["administrator", "creator"]: return
 
-    now_hour = datetime.now().hour
-    if 2 <= now_hour < 8:
+    # Türkiye saatine göre kontrol
+    now = datetime.now(TR_TIMEZONE)
+    if 2 <= now.hour < 8:
         try: await message.delete()
         except: pass
         warn = await message.reply_text(f"😴 @{user.username} Grup kapalı. 08:00'de açılacaktır.")
@@ -98,19 +100,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN: return
-    # Hatayı çözen ana değişiklik burası:
+    # JobQueue desteğiyle uygulamayı kur
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Zamanlayıcıları tanımla
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(send_rules_periodically, interval=14400, first=10)
-        job_queue.run_daily(daily_reset, time=time(2, 1))
+    # Zamanlayıcıları kur
+    jq = app.job_queue
+    jq.run_repeating(send_rules_periodically, interval=14400, first=10)
+    jq.run_daily(daily_reset, time=time(2, 1, tzinfo=TR_TIMEZONE))
     
-    app.add_handler(CommandHandler("rules", rules_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("Bot başlatılıyor...")
+    print("Bot başlatıldı...")
     app.run_polling()
 
 if __name__ == "__main__":
