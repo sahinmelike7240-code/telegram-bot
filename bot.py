@@ -10,8 +10,6 @@ DATA_FILE = "bot_stats.json"
 TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 
 tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$", re.IGNORECASE)
-
-# Grup ID'sini botun hatırlaması için global değişken
 current_group_id = None
 
 def load_data():
@@ -23,39 +21,23 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- 4 SAATTE BİR KURAL HATIRLATMA ---
 async def send_rules_periodically(context: ContextTypes.DEFAULT_TYPE):
     if current_group_id:
-        rules_text = (
-            "📢 **DÜZENLİ KURAL HATIRLATMASI**\n\n"
-            "▪️ Takip zorunludur.\n"
-            "▪️ Günde 2 link hakkı (08:00 - 02:00).\n"
-            "▪️ Destek vermeden onay butonuna basmak yasaktır!\n"
-            "▪️ 48 saat pasif kalanlar çıkarılır."
-        )
+        rules_text = "📢 **HATIRLATMA:** Önceki linklere destek vermeden onay butonuna basmayınız. Denetimler manuel yapılmaktadır."
         await context.bot.send_message(chat_id=current_group_id, text=rules_text)
 
-# --- İSTATİSTİK KOMUTU (/stats) ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
     if member.status not in ["administrator", "creator"]: return
-
     data = load_data()
-    if not data["users"]:
-        await update.message.reply_text("📊 Henüz veri yok.")
-        return
-
-    report = "📊 **Grup Etkileşim Raporu**\n\n👤 Kullanıcı | 🔗 Link | ✅ Onay\n"
+    report = "📊 **Grup İstatistikleri**\n\nKullanıcı | Link | Onay\n"
     for uid, info in data["users"].items():
-        report += f"@{info['username']}: {info['links']} | {info['clicks']}\n"
+        report += f"{info['username']}: {info['links']} | {info['clicks']}\n"
     await update.message.reply_text(report)
 
-# --- ANA MESAJ İŞLEME ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_group_id
     current_group_id = update.effective_chat.id
-    
     message = update.message
     user = update.effective_user
     if not message or not user: return
@@ -75,86 +57,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     uid = str(user.id)
     if uid not in data["users"]:
-        data["users"][uid] = {"username": user.username or user.first_name, "links": 0, "clicks": 0}
+        data["users"][uid] = {"username": user.first_name, "links": 0, "clicks": 0}
 
-    # Mesai ve Limit Kontrolü
     now = datetime.now(TR_TIMEZONE)
-    if 2 <= now.hour < 8:
+    if 2 <= now.hour < 8 or data["users"][uid]["links"] >= 2:
         try: await message.delete()
         except: pass
         return
 
-    if data["users"][uid]["links"] >= 2:
-        try: await message.delete()
-        except: pass
-        return
-
-    # Linki sil ve onay mesajı çıkar
+    # Linki geçici sakla ve temiz onay mesajı çıkar
     link_to_post = text
     try: await message.delete()
     except: pass
 
-    # Callback data içine sadece UID koyuyoruz ki daha kısa olsun
     keyboard = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Geçici link verisini sakla
     context.user_data[f"link_{uid}"] = link_to_post
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"🚨 **@{user.username} Bekle!**\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 **Senin Linkin:** {link_to_post}",
-        reply_markup=reply_markup
+        text=f"🚨 **Bekle!**\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 **Senin Linkin:** {link_to_post}",
+        reply_markup=reply_markup,
+        disable_web_page_preview=True # Kalabalık yapmasın diye önizlemeyi kapattım
     )
 
-# --- BUTON TIKLAMA İŞLEMİ ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # query.data formatı: "v_123456"
     target_uid = query.data.replace("v_", "")
     user_id = str(query.from_user.id)
 
-    # Sadece link sahibi onaylayabilir
     if user_id != target_uid:
-        await query.answer("⚠️ Bu link senin değil, sadece sahibi onaylayabilir!", show_alert=True)
+        await query.answer("⚠️ Sadece link sahibi onaylayabilir!", show_alert=True)
         return
 
     link = context.user_data.get(f"link_{target_uid}")
     if not link:
-        await query.answer("❌ Hata: Link verisi bulunamadı veya süre doldu.")
+        await query.answer("❌ Süre doldu, lütfen tekrar link atın.")
         return
 
-    # Veriyi kaydet
     data = load_data()
-    if target_uid not in data["users"]:
-        data["users"][target_uid] = {"username": query.from_user.username or "User", "links": 0, "clicks": 0}
-    
     data["users"][target_uid]["links"] += 1
     data["users"][target_uid]["clicks"] += 1
     save_data(data)
 
-    # Linki paylaş
+    # TAM SENİN İSTEDİĞİN SADE MESAJ FORMATI
+    final_text = (
+        "✅ **Yukarıdaki Linklere Yorum Beğeni Ve Kaydet yaptım**\n\n"
+        f"{link}"
+    )
+
     await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text=f"✅ **DESTEK ONAYLANDI**\n👤: @{query.from_user.username}\n🔗: {link}"
+        text=final_text
     )
     
     try: await query.message.delete()
     except: pass
-    await query.answer("Başarıyla onaylandı!")
+    await query.answer("Onaylandı!")
 
 def main():
     if not BOT_TOKEN: return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    # 4 saatte bir hatırlatıcıyı başlat
     app.job_queue.run_repeating(send_rules_periodically, interval=14400, first=10)
-    
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
-    
-    print("Bot Onay Sistemi ve Hatırlatıcı Hazır!")
     app.run_polling()
 
 if __name__ == "__main__":
