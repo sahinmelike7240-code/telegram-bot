@@ -2,22 +2,22 @@ import json
 import os
 import re
 import asyncio
-from datetime import datetime, time, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime, time
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    CallbackQueryHandler,
-    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
+    CommandHandler,
 )
 
 # Ayarlar
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATA_FILE = "bot_data.json"
-BOT_ACTIVE = True # Botun genel açık/kapalı durumu
+GROUP_ID = None 
 
+# X (Twitter) Link Kontrolü
 tweet_regex = re.compile(
     r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$",
     re.IGNORECASE,
@@ -25,168 +25,117 @@ tweet_regex = re.compile(
 
 def load_data():
     if not os.path.exists(DATA_FILE):
-        return {"shared_links": {}, "daily_users": {}, "user_stats": {}, "whitelist": [], "blacklist": [], "settings": {"limit": 1}}
+        return {"daily_users": {}}
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return {"shared_links": {}, "daily_users": {}, "user_stats": {}, "whitelist": [], "blacklist": [], "settings": {"limit": 1}}
+        return {"daily_users": {}}
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def current_reset_key():
-    return str(datetime.now().date().toordinal())
+# --- GÜN SONU SIFIRLAMA (Gece 02:01) ---
+async def daily_reset(context: ContextTypes.DEFAULT_TYPE):
+    data = {"daily_users": {}} 
+    save_data(data)
+    if GROUP_ID:
+        await context.bot.send_message(chat_id=GROUP_ID, text="🌙 **Grup Mesaisi Bitmiştir.** Günlük limitler sıfırlandı. Sabah 08:00'de görüşmek üzere!")
 
-async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-        return member.status in ["administrator", "creator"]
-    except: return False
+# --- 4 SAATTE BİR KURAL HATIRLATMA ---
+async def send_rules_periodically(context: ContextTypes.DEFAULT_TYPE):
+    if GROUP_ID:
+        rules_text = (
+            "📢 **KURAL HATIRLATMASI**\n\n"
+            "▪️ Takip zorunludur! (Yönetim kontrol ediyor)\n"
+            "▪️ Günde 2 link hakkı (08:00 - 02:00 arası).\n"
+            "▪️ Önceki linklere yorum/beğeni/kaydetme şart.\n"
+            "▪️ Küfür ve alakasız sohbet kesinlikle yasaktır."
+        )
+        await context.bot.send_message(chat_id=GROUP_ID, text=rules_text)
 
-async def safe_delete(message):
-    try: await message.delete()
-    except: pass
-
-# --- TEMEL KOMUTLAR ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = (
-        f"Merhaba {user.first_name}! 🚀\n"
-        "X Etkileşim Botu aktif. Kuralları öğrenmek için /rules yazabilirsin."
-    )
-    await update.message.reply_text(text)
-
+# --- KOMUTLAR ---
 async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rules = (
+    rules_text = (
         "🚀 **X ETKİLEŞİM GRUBU KURALLARI**\n\n"
         "▪️ Herkes birbirini takip etmek zorunda.\n"
-        "▪️ Günde en fazla 1 gönderi paylaşılabilir.\n"
+        "▪️ Günde en fazla 2 gönderi paylaşılabilir.\n"
         "▪️ Atılan her gönderiye yorum, beğeni ve kaydetme zorunludur.\n"
         "▪️ Küfür, argo, siyaset yasaktır.\n"
-        "▪️ 48 saat pasif kalanlar gruptan çıkarılır.\n\n"
-        "💡 *Lütfen kurallara uyalım.*"
+        "▪️ 48 saat pasif kalanlar gruptan çıkarılır."
     )
-    await update.message.reply_text(rules, parse_mode="Markdown")
+    await update.message.reply_text(rules_text)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "📖 **Komut Listesi**\n"
-        "/rules - Kuralları gösterir\n"
-        "/stats - Genel istatistik\n"
-        "/top - En aktif 10 üye\n"
-        "/me - Profil durumun\n"
-        "/today - Bugün paylaşılanlar"
-    )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-# --- YÖNETİM KOMUTLARI ---
-
-async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return
-    try:
-        new_limit = int(context.args[0])
-        data = load_data()
-        data["settings"]["limit"] = new_limit
-        save_data(data)
-        await update.message.reply_text(f"✅ Günlük link limiti {new_limit} olarak güncellendi.")
-    except:
-        await update.message.reply_text("Kullanım: /setlimit 2")
-
-async def off_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return
-    global BOT_ACTIVE
-    BOT_ACTIVE = not BOT_ACTIVE
-    status = "AÇIK" if BOT_ACTIVE else "KAPALI"
-    await update.message.reply_text(f"🤖 Bot durumu: {status}")
-
-# --- HOŞ GELDİN ---
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for user in update.message.new_chat_members:
-        try:
-            welcome_text = (
-                f"Hoş geldin {user.first_name}! 👋\n\n"
-                "Kuralları okumayı unutma: /rules\n"
-                "Link paylaşmadan önce önceki paylaşımlara destek ver!"
-            )
-            await context.bot.send_message(chat_id=user.id, text=welcome_text)
-        except: pass
-    await safe_delete(update.message)
-
-# --- MESAJ İŞLEME ---
+# --- ANA MESAJ İŞLEME ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not BOT_ACTIVE: return
+    global GROUP_ID
+    GROUP_ID = update.effective_chat.id
+    
     message = update.message
     user = update.effective_user
     if not message or not user: return
-    if await is_admin(update, context): return
 
-    data = load_data()
-    user_id = str(user.id)
-    
-    if user_id in data["blacklist"]:
-        await safe_delete(message)
+    # Admin muafiyeti
+    member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+    if member.status in ["administrator", "creator"]: return
+
+    # ZAMAN KONTROLÜ (08:00 - 02:00 arası izinli)
+    now_hour = datetime.now().hour
+    if 2 <= now_hour < 8:
+        try: await message.delete()
+        except: pass
+        warn = await message.reply_text(f"😴 @{user.username} Grup şu an kapalı. Paylaşımlar sabah 08:00'de başlayacaktır.")
+        await asyncio.sleep(5)
+        await warn.delete()
         return
 
     text = (message.text or "").strip()
     match = tweet_regex.match(text)
     
-    # Sohbet yasak: Link değilse sil
+    # SOHBET YASAK
     if not match:
-        await safe_delete(message)
+        try: await message.delete()
+        except: pass
         return
 
-    # Link kuralları kontrolü
-    reset_key = current_reset_key()
-    if user_id in data["daily_users"] and data["daily_users"][user_id] == reset_key and user_id not in data["whitelist"]:
-        await safe_delete(message)
-        # Uyarı mesajı (5 saniye sonra silinir)
-        warn = await message.reply_text(f"⚠️ @{user.username} Günlük limitine ulaştın!")
-        await asyncio.sleep(5)
-        await safe_delete(warn)
-        return
-
-    # Kayıt
-    data["daily_users"][user_id] = reset_key
-    if user_id not in data["user_stats"]:
-        data["user_stats"][user_id] = {"name": user.full_name, "count": 0}
-    data["user_stats"][user_id]["count"] += 1
-    save_data(data)
-
-    # Hatırlatma
-    rem = await message.reply_text(f"✅ @{user.username} Paylaşıldı! Lütfen önceki linklere destek ver.")
-    await asyncio.sleep(10)
-    await safe_delete(rem)
-
-# --- STATS & TOP ---
-async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # GÜNLÜK 2 LİNK LİMİTİ
     data = load_data()
-    stats = data.get("user_stats", {})
-    sorted_stats = sorted(stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10]
+    user_id = str(user.id)
+    user_count = data["daily_users"].get(user_id, 0)
+
+    if user_count >= 2:
+        try: await message.delete()
+        except: pass
+        warn = await message.reply_text(f"⚠️ @{user.username} Günlük 2 link hakkını zaten kullandın!")
+        await asyncio.sleep(5)
+        await warn.delete()
+        return
+
+    # Kayıt ve Onay
+    data["daily_users"][user_id] = user_count + 1
+    save_data(data)
     
-    text = "🏆 **En Çok Paylaşım Yapanlar**\n\n"
-    for i, (uid, info) in enumerate(sorted_stats, 1):
-        text += f"{i}. {info['name']} - {info['count']} paylaşım\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    rem = await message.reply_text(f"✅ @{user.username} Linkin alındı ({user_count + 1}/2). Lütfen diğer fenomenlere destek ver!")
+    
+    async def del_rem():
+        await asyncio.sleep(10)
+        try: await rem.delete()
+        except: pass
+    asyncio.create_task(del_rem())
 
 def main():
     if not BOT_TOKEN: return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("rules", rules_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("top", top_command))
-    app.add_handler(CommandHandler("off", off_on_command))
-    app.add_handler(CommandHandler("on", off_on_command))
-    app.add_handler(CommandHandler("setlimit", set_limit))
+    job_queue = app.job_queue
+    job_queue.run_repeating(send_rules_periodically, interval=14400, first=10)
+    job_queue.run_daily(daily_reset, time=time(2, 1))
     
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
+    app.add_handler(CommandHandler("rules", rules_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("Fenomen Botu Aktif!")
+    print("2 Link Limitli Bot Aktif!")
     app.run_polling()
 
 if __name__ == "__main__":
