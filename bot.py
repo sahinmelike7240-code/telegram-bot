@@ -464,7 +464,7 @@ if __name__ == "__main__":
 
 
 
-::contentReference[oaicite:1]{index=1}
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -479,4 +479,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
