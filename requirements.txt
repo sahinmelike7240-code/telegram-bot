@@ -1,2 +1,3 @@
+python-telegram-bot==20.8
 python-telegram-bot[job-queue]==20.8
-ptb-main-loop==0.0.1
+pytz
