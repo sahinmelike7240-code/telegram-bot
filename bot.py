@@ -463,19 +463,3 @@ if __name__ == "__main__":
     main()
 
 
-
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("today", today_command))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-
-    print("Bot çalışıyor...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
