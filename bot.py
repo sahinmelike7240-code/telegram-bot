@@ -462,7 +462,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-bunu ekledim dostum şimdi ne yapmam gerekiyor 1 dk da özetle 2 uzun uzun yazma ! 
+
 
 ::contentReference[oaicite:1]{index=1}
 def main():
@@ -479,3 +479,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
