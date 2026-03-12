@@ -1,5 +1,5 @@
 import json, os, re, asyncio
-from datetime import datetime
+from datetime import datetime, time
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler, CallbackQueryHandler
@@ -11,6 +11,9 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 
 tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$", re.IGNORECASE)
 
+# Grup ID'sini botun hatırlaması için global değişken
+current_group_id = None
+
 def load_data():
     if not os.path.exists(DATA_FILE): return {"users": {}}
     try:
@@ -20,6 +23,18 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
+# --- 4 SAATTE BİR KURAL HATIRLATMA ---
+async def send_rules_periodically(context: ContextTypes.DEFAULT_TYPE):
+    if current_group_id:
+        rules_text = (
+            "📢 **DÜZENLİ KURAL HATIRLATMASI**\n\n"
+            "▪️ Takip zorunludur.\n"
+            "▪️ Günde 2 link hakkı (08:00 - 02:00).\n"
+            "▪️ Destek vermeden onay butonuna basmak yasaktır!\n"
+            "▪️ 48 saat pasif kalanlar çıkarılır."
+        )
+        await context.bot.send_message(chat_id=current_group_id, text=rules_text)
+
 # --- İSTATİSTİK KOMUTU (/stats) ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -28,20 +43,19 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = load_data()
     if not data["users"]:
-        await update.message.reply_text("📊 Henüz veri toplanmadı.")
+        await update.message.reply_text("📊 Henüz veri yok.")
         return
 
-    report = "📊 **Grup Etkileşim Raporu**\n"
-    report += "----------------------------\n"
-    report += "👤 Kullanıcı | 🔗 Link | ✅ Onay\n"
-    
+    report = "📊 **Grup Etkileşim Raporu**\n\n👤 Kullanıcı | 🔗 Link | ✅ Onay\n"
     for uid, info in data["users"].items():
         report += f"@{info['username']}: {info['links']} | {info['clicks']}\n"
-    
     await update.message.reply_text(report)
 
 # --- ANA MESAJ İŞLEME ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global current_group_id
+    current_group_id = update.effective_chat.id
+    
     message = update.message
     user = update.effective_user
     if not message or not user: return
@@ -58,79 +72,89 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_admin: return # Admin muaf
 
-    # Veriyi hazırla
     data = load_data()
     uid = str(user.id)
     if uid not in data["users"]:
         data["users"][uid] = {"username": user.username or user.first_name, "links": 0, "clicks": 0}
 
-    # Günlük Limit Kontrolü
+    # Mesai ve Limit Kontrolü
+    now = datetime.now(TR_TIMEZONE)
+    if 2 <= now.hour < 8:
+        try: await message.delete()
+        except: pass
+        return
+
     if data["users"][uid]["links"] >= 2:
         try: await message.delete()
         except: pass
-        warn = await message.reply_text(f"⚠️ @{user.username} Günlük 2 limitin doldu!")
-        await asyncio.sleep(5)
-        await warn.delete()
         return
 
-    # PSİKOLOJİK KONTROL BAŞLIYOR
+    # Linki sil ve onay mesajı çıkar
     link_to_post = text
-    try: await message.delete() # Orijinal mesajı sil
+    try: await message.delete()
     except: pass
 
-    keyboard = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"verify_{uid}")]]
+    # Callback data içine sadece UID koyuyoruz ki daha kısa olsun
+    keyboard = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Kullanıcıya özel onay mesajı
-    verify_msg = await context.bot.send_message(
+    # Geçici link verisini sakla
+    context.user_data[f"link_{uid}"] = link_to_post
+
+    await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"🚨 **@{user.username} Bekle!**\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n"
-             f"🔗 **Senin Linkin:** {link_to_post}\n\n"
-             "Destekleri tamamladıysan aşağıdaki butona bas. Yanlış beyan gruptan atılma sebebidir!",
+        text=f"🚨 **@{user.username} Bekle!**\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 **Senin Linkin:** {link_to_post}",
         reply_markup=reply_markup
     )
-    
-    # Geçici veriyi sakla (onay için)
-    context.user_data[f"pending_link_{uid}"] = link_to_post
 
-# --- BUTON TIKLAMA (ONAY) ---
+# --- BUTON TIKLAMA İŞLEMİ ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    uid = str(query.from_user.id)
-    
-    if not query.data.startswith(f"verify_{uid}"):
-        await query.answer("Bu senin işlemin değil!", show_alert=True)
+    # query.data formatı: "v_123456"
+    target_uid = query.data.replace("v_", "")
+    user_id = str(query.from_user.id)
+
+    # Sadece link sahibi onaylayabilir
+    if user_id != target_uid:
+        await query.answer("⚠️ Bu link senin değil, sadece sahibi onaylayabilir!", show_alert=True)
         return
 
-    link = context.user_data.get(f"pending_link_{uid}")
+    link = context.user_data.get(f"link_{target_uid}")
     if not link:
-        await query.answer("İşlem zaman aşımına uğradı.")
+        await query.answer("❌ Hata: Link verisi bulunamadı veya süre doldu.")
         return
 
-    # İstatistiği güncelle
+    # Veriyi kaydet
     data = load_data()
-    data["users"][uid]["links"] += 1
-    data["users"][uid]["clicks"] += 1
+    if target_uid not in data["users"]:
+        data["users"][target_uid] = {"username": query.from_user.username or "User", "links": 0, "clicks": 0}
+    
+    data["users"][target_uid]["links"] += 1
+    data["users"][target_uid]["clicks"] += 1
     save_data(data)
 
-    # Linki resmi olarak grupta paylaş
+    # Linki paylaş
     await context.bot.send_message(
         chat_id=query.message.chat_id,
         text=f"✅ **DESTEK ONAYLANDI**\n👤: @{query.from_user.username}\n🔗: {link}"
     )
     
-    await query.message.delete()
-    await query.answer("Linkin grupta paylaşıldı!")
+    try: await query.message.delete()
+    except: pass
+    await query.answer("Başarıyla onaylandı!")
 
 def main():
     if not BOT_TOKEN: return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
+    # 4 saatte bir hatırlatıcıyı başlat
+    app.job_queue.run_repeating(send_rules_periodically, interval=14400, first=10)
+    
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("İstatistikli ve Kontrollü Bot Aktif!")
+    print("Bot Onay Sistemi ve Hatırlatıcı Hazır!")
     app.run_polling()
 
 if __name__ == "__main__":
