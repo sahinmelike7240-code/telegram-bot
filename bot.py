@@ -13,7 +13,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_TOKEN = "8145778749:AAE3SjCRNisC8UbobUGzaw9Go4LG7F1yffc"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATA_FILE = "bot_data.json"
 
 tweet_regex = re.compile(
@@ -456,4 +456,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
