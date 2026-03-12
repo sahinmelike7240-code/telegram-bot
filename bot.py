@@ -1,5 +1,5 @@
 import json, os, re, asyncio
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler, CallbackQueryHandler
@@ -11,27 +11,21 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 
 tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$", re.IGNORECASE)
 
-# Aktif bekleyen onaylar (Kilit mekanizması)
-waiting_approvals = {} 
-
+# --- VERİ YÖNETİMİ ---
 def load_data():
-    if not os.path.exists(DATA_FILE): return {"users": {}}
+    if not os.path.exists(DATA_FILE): 
+        return {"users": {}, "waiting": {}} # "waiting" kısmını ekledik
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except: return {"users": {}}
+        with open(DATA_FILE, "r", encoding="utf-8") as f: 
+            data = json.load(f)
+            if "waiting" not in data: data["waiting"] = {}
+            return data
+    except: 
+        return {"users": {}, "waiting": {}}
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-
-# --- İSTATİSTİK ---
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    if member.status not in ["administrator", "creator"]: return
-    data = load_data()
-    report = "📊 **Grup İstatistikleri**\n\nKullanıcı | Link | Onay\n"
-    for uid, info in data["users"].items():
-        report += f"{info['username']}: {info['links']} | {info['clicks']}\n"
-    await update.message.reply_text(report)
+    with open(DATA_FILE, "w", encoding="utf-8") as f: 
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # --- ANA MESAJ İŞLEME ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,28 +37,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = member.status in ["administrator", "creator"]
     text = (message.text or "").strip()
 
-    # Link değilse sil (Admin hariç)
     if not tweet_regex.match(text):
-        if not is_admin: 
+        if not is_admin:
             try: await message.delete()
             except: pass
         return
 
-    if is_admin: return # Adminlere kısıtlama yok
+    if is_admin: return 
 
+    data = load_data()
     uid = str(user.id)
-    
-    # KİLİT KONTROLÜ: Kullanıcının zaten bekleyen bir onayı var mı?
-    if uid in waiting_approvals:
+
+    # KİLİT KONTROLÜ (Dosyadan kontrol ediyor, bot kapansa da silinmez)
+    if uid in data["waiting"]:
         try: await message.delete()
         except: pass
-        warn = await message.reply_text(f"⚠️ @{user.username} Önce önceki linkini onaylamalısın!")
+        warn = await message.reply_text(f"⚠️ @{user.username} Önceki linkin onay bekliyor!")
         await asyncio.sleep(3)
         await warn.delete()
         return
 
     # Günlük Hak Kontrolü
-    data = load_data()
     if uid not in data["users"]:
         data["users"][uid] = {"username": user.first_name, "links": 0, "clicks": 0}
     
@@ -73,60 +66,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         return
 
-    # Orijinal mesajı sil ve onay sürecini başlat
+    # Onayı dosyaya kilitle
+    data["waiting"][uid] = text
+    save_data(data)
+
     try: await message.delete()
     except: pass
-
-    # Onayı kilitle ve linki sakla
-    waiting_approvals[uid] = text
 
     keyboard = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    sent_msg = await context.bot.send_message(
+    await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=f"🚨 **Bekle!**\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 **Senin Linkin:** {text}",
         reply_markup=reply_markup,
         disable_web_page_preview=True
     )
-    # Mesaj ID'sini sakla (onaylanınca silmek için)
-    context.user_data[f"msg_{uid}"] = sent_msg.message_id
 
-# --- BUTON TIKLAMA ---
+# --- BUTON TIKLAMA (ONAY) ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # "v_123456" formatından UID'yi al
-    target_uid = query.data.split("_")[1]
+    data_parts = query.data.split("_")
+    
+    if len(data_parts) < 2: return
+    target_uid = data_parts[1]
     user_id = str(query.from_user.id)
 
     if user_id != target_uid:
         await query.answer("⚠️ Sadece link sahibi onaylayabilir!", show_alert=True)
         return
 
-    link = waiting_approvals.get(target_uid)
+    data = load_data()
+    link = data["waiting"].get(target_uid)
+
     if not link:
-        await query.answer("❌ İşlem zaman aşımı veya link bulunamadı.")
+        await query.answer("❌ Onaylanacak link bulunamadı. Lütfen tekrar link atın.", show_alert=True)
+        # Eğer link yoksa ama buton duruyorsa mesajı temizle
+        try: await query.message.delete()
+        except: pass
         return
 
-    # Veriyi güncelle
-    data = load_data()
+    # Verileri güncelle
     data["users"][target_uid]["links"] += 1
     data["users"][target_uid]["clicks"] += 1
+    del data["waiting"][target_uid] # Kilidi aç
     save_data(data)
 
-    # Kilidi aç
-    del waiting_approvals[target_uid]
-
-    # Mesajı gönder
+    # Başarı mesajı
     await context.bot.send_message(
         chat_id=query.message.chat_id,
         text=f"✅ **Yukarıdaki Linklere Yorum Beğeni Ve Kaydet yaptım**\n\n{link}"
     )
     
-    # Onay kutusunu sil
     try: await query.message.delete()
     except: pass
-    await query.answer("Onaylandı ve Paylaşıldı!")
+    await query.answer("Başarıyla paylaşıldı!")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+    if member.status not in ["administrator", "creator"]: return
+    data = load_data()
+    report = "📊 **İstatistikler**\n\nKullanıcı | Link | Onay\n"
+    for uid, info in data["users"].items():
+        report += f"{info['username']}: {info['links']} | {info['clicks']}\n"
+    await update.message.reply_text(report)
 
 def main():
     if not BOT_TOKEN: return
