@@ -12,7 +12,7 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 REMIND_INTERVAL = 7200  # 2 saat
 DELETE_AFTER = 300      # 5 dakika
 
-# --- YENİ SADE KURALLAR METNİ ---
+# --- SENİN İSTEDİĞİN YENİ KURAL METNİ ---
 RULES_TEXT = (
     "🚀 X Etkileşim Grubu Kuralları\n\n"
     "Grubun düzenli kalması ve herkesin adil şekilde etkileşim almasını sağlamak için birkaç basit kuralımız var:\n\n"
@@ -37,65 +37,28 @@ tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9
 # --- VERİ İŞLEMLERİ ---
 def load_data():
     if not os.path.exists(DATA_FILE): return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}, "last_reset": ""}
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except: return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}, "last_reset": ""}
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- SERVİS MESAJLARINI SİL (KATILDI/AYRILDI) ---
-async def delete_service_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- SERVİS MESAJLARINI SİL (YENİ EK) ---
+async def delete_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await update.message.delete()
     except: pass
 
-# --- ZAMANLANMIŞ GÖREV ---
+# --- KURALLAR DÖNGÜSÜ ---
 async def remind_rules(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    try:
-        msg = await context.bot.send_message(chat_id=job.chat_id, text=RULES_TEXT)
-        await asyncio.sleep(DELETE_AFTER)
-        await msg.delete()
-    except: pass
-
-# --- ÖZEL ADMIN KONTROLÜ ---
-async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_chat or update.effective_chat.type == "private": return True
-    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    return member.status in ["administrator", "creator"]
+    msg = await context.bot.send_message(chat_id=job.chat_id, text=RULES_TEXT)
+    await asyncio.sleep(DELETE_AFTER)
+    await msg.delete()
 
 # --- KOMUTLAR ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message: return
-    if update.effective_chat.type != "private":
-        if not await is_user_admin(update, context):
-            try: await update.message.delete()
-            except: pass
-            return 
-        try: await update.message.delete()
-        except: pass
-        chat_id = update.effective_chat.id
-        current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
-        for j in current_jobs: j.schedule_removal()
-        context.job_queue.run_repeating(remind_rules, interval=REMIND_INTERVAL, first=10, chat_id=chat_id, name=str(chat_id))
-    else:
-        await update.message.reply_text("👋 Merhaba! Grupta /liste yazarak güncel linkleri buradan alabilirsin.")
-
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message: return
-    try: await update.message.delete()
-    except: pass
-    data = load_data()
-    links = data.get("daily_links", [])
-    user = update.effective_user
-    uid = str(user.id)
-    if not links:
-        m = await context.bot.send_message(chat_id=update.effective_chat.id, text="📭 Henüz onaylanmış link yok.")
-        await asyncio.sleep(5); await m.delete(); return
-    
-    last_idx = data.get("last_seen", {}).get(uid, 0)
-    new_links = links[last_idx:]
-    if not new_links:
-        info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Zaten gün
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    # Admin kontrolü
+    member = await context.bot.get_
