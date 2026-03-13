@@ -12,7 +12,7 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 REMIND_INTERVAL = 7200  # 2 saat
 DELETE_AFTER = 300      # 5 dakika
 
-# --- KURALLAR METNİ ---
+# --- KURALLAR METNİ (YILDIZSIZ VE SADE) ---
 RULES_TEXT = (
     "🚀 X ETKİLEŞİM GRUBU - RESMİ KURALLAR 🚀\n\n"
     "Grubumuzun kalitesini korumak ve herkesin eşit etkileşim almasını sağlamak için aşağıdaki kurallar zorunludur:\n\n"
@@ -45,7 +45,7 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- ZAMANLANMIŞ GÖREV (KURALLAR) ---
+# --- ZAMANLANMIŞ GÖREV ---
 async def remind_rules(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     try:
@@ -54,46 +54,38 @@ async def remind_rules(context: ContextTypes.DEFAULT_TYPE):
         await msg.delete()
     except: pass
 
+# --- ÖZEL ADMIN KONTROLÜ ---
+async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private": return True
+    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+    return member.status in ["administrator", "creator"]
+
 # --- KOMUTLAR ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
-    chat_id = update.effective_chat.id
-    user = update.effective_user
     
-    # GRUPTA MIYIZ?
+    # Gruptaysa Admin Kontrolü
     if update.effective_chat.type != "private":
-        # ADMİN Mİ?
-        member = await context.bot.get_chat_member(chat_id, user.id)
-        if member.status not in ["administrator", "creator"]:
+        if not await is_user_admin(update, context):
             try: await update.message.delete()
             except: pass
-            return # ÜYEYSE BURADA BİTER, DÖNGÜ BAŞLAMAZ
+            return # Admin değilse hiçbir işlem yapma
 
-        # SADECE ADMİNSE BURAYA GEÇER
         try: await update.message.delete()
         except: pass
         
-        # Eski döngüleri temizle
+        # Eski zamanlayıcıları temizle
+        chat_id = update.effective_chat.id
         current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
         for j in current_jobs: j.schedule_removal()
         
-        # Döngüyü kur (İlk kural mesajı 2 saat sonra)
+        # Sadece sessizce döngüyü kur (İlk mesaj 2 saat sonra)
         context.job_queue.run_repeating(remind_rules, interval=REMIND_INTERVAL, first=REMIND_INTERVAL, chat_id=chat_id, name=str(chat_id))
         
-        info = await update.message.reply_text(f"✅ Sistem @{user.username} tarafından aktif edildi. Kurallar 2 saatte bir gelecek.")
+        info = await update.message.reply_text("✅ Sistem admin tarafından aktif edildi.")
         await asyncio.sleep(5); await info.delete()
     else:
-        # ÖZEL MESAJ (DM)
         await update.message.reply_text("👋 Merhaba! Grupta /liste yazarak güncel linkleri buradan alabilirsin.")
-
-async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message: return
-    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    if member.status in ["administrator", "creator"]:
-        try: await update.message.delete()
-        except: pass
-        msg = await update.message.reply_text(RULES_TEXT)
-        await asyncio.sleep(DELETE_AFTER); await msg.delete()
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
@@ -115,7 +107,6 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not new_links:
         try:
-            await context.bot.send_message(chat_id=user.id, text="✅ Harikasın! Tüm listeyi zaten tamamladın.")
             info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Zaten güncelsin!")
             await asyncio.sleep(5); await info.delete()
         except: pass
@@ -126,57 +117,34 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user.id, text=res, disable_web_page_preview=True)
             data["last_seen"][uid] = len(links)
             save_data(data)
-            info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Yeni linkler DM gönderildi.")
+            info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Liste DM gönderildi.")
             await asyncio.sleep(5); await info.delete()
         except:
             warn = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ @{user.username} Önce botu başlatmalısın (@xlinkkontrol_bot)")
             await asyncio.sleep(7); await warn.delete()
 
-async def hepsi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message: return
-    data = load_data()
-    links = data.get("daily_links", [])
-    user = update.effective_user
-    
-    try: await update.message.delete()
-    except: pass
-
-    if not links: return
-    res = "📚 BUGÜNKÜ TÜM LİSTE 📚\n\n"
-    for i, l in enumerate(links, 1): res += f"{i}. {l}\n"
-    try:
-        await context.bot.send_message(chat_id=user.id, text=res, disable_web_page_preview=True)
-        info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Tüm liste DM gönderildi.")
-        await asyncio.sleep(5); await info.delete()
-    except: pass
-
-# --- ANA MESAJ FİLTRESİ ---
+# --- ANA MESAJ FİLTRESİ (TAM KİLİT) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.text: return
     user = update.effective_user
-    text = message.text.strip()
+    text = message.text.strip().lower()
     
-    # KOMUTLARI AYIKLA
+    # 1. KRİTİK ADIM: Admin olmayan biri komut tetiklemeye çalışırsa engelle
     if text.startswith(("/", "@")):
-        # Admin kontrolü
-        member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
-        is_admin = member.status in ["administrator", "creator"]
+        if not await is_user_admin(update, context):
+            if not text.startswith("/liste"): # Liste hariç her şeyi imha et
+                try: await message.delete()
+                except: pass
+                return
         
-        # Eğer admin değilse ve /liste /hepsi harici komutsa sil ve bitir
-        if not is_admin and not text.startswith(("/liste", "/hepsi")):
-            try: await message.delete()
-            except: pass
-            return
-        # Komut adminse veya yasal komutsa dokunma (CommandHandler halletsin)
-        if text.startswith(("/liste", "/hepsi", "/start", "/kurallar", "/stats")):
+        # Komutlara CommandHandler baksın
+        if any(text.startswith(c) for c in ["/start", "/liste", "/kurallar", "/hepsi"]):
             return
 
-    # X LINK KONTROLÜ
-    member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
-    is_admin = member.status in ["administrator", "creator"]
-
-    if not tweet_regex.match(text):
+    # 2. KRİTİK ADIM: Link Paylaşım Kontrolü
+    is_admin = await is_user_admin(update, context)
+    if not tweet_regex.match(message.text):
         if not is_admin:
             try: await message.delete()
             except: pass
@@ -198,7 +166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         return
         
-    data["waiting"][uid] = text
+    data["waiting"][uid] = message.text
     save_data(data)
     try: await message.delete()
     except: pass
@@ -206,7 +174,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"🚨 Bekle!\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 Senin Linkin: {text}",
+        text=f"🚨 Bekle!\n\nLinkinin paylaşılması için gruptaki son linklere destek vermelisin.\n\n🔗 Senin Linkin: {message.text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         disable_web_page_preview=True
     )
@@ -233,8 +201,6 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("liste", list_command))
-    app.add_handler(CommandHandler("hepsi", hepsi_command))
-    app.add_handler(CommandHandler("kurallar", rules_command))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling()
