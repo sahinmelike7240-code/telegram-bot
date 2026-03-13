@@ -12,12 +12,12 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 REMIND_INTERVAL = 7200  # 2 saat
 DELETE_AFTER = 300      # 5 dakika
 
-# --- KURALLAR METNİ ---
+# --- YENİ SADE KURALLAR METNİ ---
 RULES_TEXT = (
     "🚀 X Etkileşim Grubu Kuralları\n\n"
     "Grubun düzenli kalması ve herkesin adil şekilde etkileşim almasını sağlamak için birkaç basit kuralımız var:\n\n"
     "🔹 Takip:\n"
-    "Gruptaki üyelerin birbirini takip etmek zorundadır. Takibi bırakan hesaplar tespit edilirse gruptan çıkarılabilir.\n\n"
+    "Gruptaki üyelerin birbirini takip etmesi gerekiyor. Takibi bırakan hesaplar tespit edilirse gruptan çıkarılabilir.\n\n"
     "🔹 Günlük paylaşım:\n"
     "Herkesin eşit faydalanabilmesi için günde en fazla 2 gönderi paylaşabilirsiniz.\n\n"
     "🔹 Etkileşim şekli:\n"
@@ -36,14 +36,11 @@ tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9
 
 # --- VERİ İŞLEMLERİ ---
 def load_data():
-    if not os.path.exists(DATA_FILE): return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}}
+    if not os.path.exists(DATA_FILE): return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}, "last_reset": ""}
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
-            if "last_seen" not in d: d["last_seen"] = {}
-            if "daily_links" not in d: d["daily_links"] = []
-            return d
-    except: return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}}
+            return json.load(f)
+    except: return {"users": {}, "waiting": {}, "daily_links": [], "last_seen": {}, "last_reset": ""}
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -83,8 +80,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
         for j in current_jobs: j.schedule_removal()
         context.job_queue.run_repeating(remind_rules, interval=REMIND_INTERVAL, first=10, chat_id=chat_id, name=str(chat_id))
-        info = await update.message.reply_text("✅ Sistem aktif! Kurallar 2 saatte bir gelecek.")
-        await asyncio.sleep(5); await info.delete()
     else:
         await update.message.reply_text("👋 Merhaba! Grupta /liste yazarak güncel linkleri buradan alabilirsin.")
 
@@ -99,59 +94,8 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not links:
         m = await context.bot.send_message(chat_id=update.effective_chat.id, text="📭 Henüz onaylanmış link yok.")
         await asyncio.sleep(5); await m.delete(); return
+    
     last_idx = data.get("last_seen", {}).get(uid, 0)
     new_links = links[last_idx:]
     if not new_links:
-        try:
-            info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Zaten güncelsin!")
-            await asyncio.sleep(5); await info.delete()
-        except: pass
-    else:
-        res = f"🚀 YENİ ETKİLEŞİM LİSTESİ 🚀\n\n"
-        for i, l in enumerate(new_links, last_idx + 1): res += f"{i}. {l}\n"
-        try:
-            await context.bot.send_message(chat_id=user.id, text=res, disable_web_page_preview=True)
-            data["last_seen"][uid] = len(links)
-            save_data(data)
-            info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Liste DM gönderildi.")
-            await asyncio.sleep(5); await info.delete()
-        except:
-            warn = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ @{user.username} Önce botu başlatmalısın (@xlinkkontrol_bot)")
-            await asyncio.sleep(7); await warn.delete()
-
-# --- ANA MESAJ FİLTRESİ ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message or not message.text: return
-    user = update.effective_user
-    text = message.text.strip()
-    is_admin = await is_user_admin(update, context)
-
-    # 1. Komut Kontrolü
-    if text.startswith("/"):
-        if not is_admin and not text.startswith("/liste"):
-            try: await message.delete()
-            except: pass
-            return
-        if any(text.startswith(c) for c in ["/start", "/liste", "/kurallar"]): return
-
-    # 2. X Link Kontrolü
-    if tweet_regex.match(text):
-        if is_admin:
-            # ADMIN ÖZEL: Sınırsız paylaşım hakkı + Bot yanıtı
-            try: await message.delete()
-            except: pass
-            data = load_data()
-            data["daily_links"].append(text)
-            save_data(data)
-            # Admin link atınca botun verdiği kurumsal yanıt
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"✅ **Yukarıdaki Linklere Yorum Beğeni Ve Kaydet yaptım**\n\n{text}",
-                disable_web_page_preview=False
-            )
-            return
-
-        # ÜYE LINK ATINCA: Onay süreci ve 2 link sınırı
-        data = load_data()
-        uid = str(user.id)
+        info = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ @{user.username} Zaten gün
