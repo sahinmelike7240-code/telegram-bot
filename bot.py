@@ -62,18 +62,15 @@ async def on_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user: return
     uid = str(user.id); data = load_data()
     
-    # 1. Gruptaki link mesajlarını sil
     if uid in data.get("msg_map", {}):
         for mid in data["msg_map"][uid]:
             try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=mid)
             except: pass
         del data["msg_map"][uid]
         
-    # 2. Listeden (daily_links) linklerini çıkar
     patt = f"/{user.username}/status/" if user.username else "temp_user_path_xyz"
     data["daily_links"] = [l for l in data["daily_links"] if patt not in l]
     
-    # 3. Kullanıcıyı listeden tamamen sil
     if uid in data["users"]: del data["users"][uid]
     
     save_data(data)
@@ -83,7 +80,7 @@ async def on_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- KOMUTLAR ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        await update.message.reply_text("👋 Bot aktif!")
+        await update.message.reply_text("👋 Bot aktif! Grupta /liste yazabilirsin.")
         return
     member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
     if member.status not in ["administrator", "creator"]:
@@ -112,16 +109,24 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(5); await m.delete()
 
 async def hepsi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
-    if member.status not in ["administrator", "creator"]: return
-    try: await update.message.delete()
-    except: pass
+    # 1. Grupta yazılırsa komutu sil ve cevap verme
+    if update.effective_chat.type != "private":
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+            if member.status in ["administrator", "creator"]:
+                await update.message.delete()
+        except: pass
+        return
+
+    # 2. Özelden (DM) yazılırsa raporu at
     data = load_data()
-    if not data["users"]: return
+    if not data["users"]:
+        await update.message.reply_text("📊 Henüz kayıtlı veri yok.")
+        return
     rapor = "📊 **GÜNLÜK TAKİP RAPORU** 📊\n\n"
     for uid, info in data["users"].items():
         rapor += f"👤 @{info.get('username')}: {info.get('links')} Link - {info.get('list_count')} Liste\n"
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=rapor)
+    await update.message.reply_text(rapor)
 
 # --- MESAJ İŞLEME ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,25 +157,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except: pass
         kb = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
         w_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🚨 Bekle! Destek vermelisin.\n🔗 Linkin: {text}", reply_markup=InlineKeyboardMarkup(kb))
-        context.job_queue.run_once(lambda ctx: w_msg.delete(), when=WAITING_DELETE, name=f"del_{w_msg.message_id}")
+        context.job_queue.run_once(lambda ctx: w_msg.delete() if uid in load_data()["waiting"] else None, when=WAITING_DELETE)
     elif not is_admin:
         try: await message.delete()
         except: pass
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; uid = query.data.split("_")[1]
-    if str(query.from_user.id) != uid: return
+    if str(query.from_user.id) != uid:
+        await query.answer("⚠️ Sadece kendi linkini onaylayabilirsin!", show_alert=True)
+        return
     data = load_data(); link = data["waiting"].get(uid)
     if not link: return
     try: await query.message.delete()
     except: pass
-    for j in context.job_queue.get_jobs_by_name(f"del_{query.message.message_id}"): j.schedule_removal()
     
     u_info = data["users"].setdefault(uid, {"username": query.from_user.username or query.from_user.first_name, "links": 0, "list_count": 0})
     u_info["links"] += 1; data["daily_links"].append(link)
     sent = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ **Yukarıdaki Linklere Yorum Beğeni Ve Kaydet yaptım**\n\n{link}")
     data.setdefault("msg_map", {}).setdefault(uid, []).append(sent.message_id)
     del data["waiting"][uid]; save_data(data)
+    await query.answer("✅ Onaylandı!")
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
