@@ -10,6 +10,7 @@ TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 REMIND_INTERVAL = 7200
 WAITING_DELETE = 60
 
+# Senin orijinal kuralların
 RULES_TEXT = (
     "🚀 X Etkileşim Grubu Kuralları\n\n"
     "🔹 Takip: Üyeler birbirini takip etmelidir.\n"
@@ -20,6 +21,7 @@ RULES_TEXT = (
 
 tweet_regex = re.compile(r"^(https?://)?(www\.)?(x\.com|twitter\.com)/[A-Za-z0-9_]+/status/\d+(\?.*)?$", re.IGNORECASE)
 
+# --- VERİ MERKEZİ ---
 def load_data():
     if not os.path.exists(DATA_FILE): return {"users": {}, "waiting": {}, "daily_links": [], "last_rule_id": None, "msg_map": {}}
     try:
@@ -33,6 +35,7 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# --- GRUP YÖNETİMİ ---
 async def daily_reset(context: ContextTypes.DEFAULT_TYPE):
     save_data({"users": {}, "waiting": {}, "daily_links": [], "last_rule_id": None, "msg_map": {}})
 
@@ -56,8 +59,9 @@ async def on_user_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        await update.message.reply_text("👋 Bot aktif!")
+        await update.message.reply_text("👋 Bot aktif! Grupta /liste yazabilirsin.")
         return
+    # Grupta start sadece admin için
     member = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
     if member.status not in ["administrator", "creator"]: return
     try: await update.message.delete()
@@ -67,57 +71,60 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    # Grupta yazıldıysa hemen sil
+    # 1. Grupta yazıldıysa komutu sil
     if update.effective_chat.type != "private":
         try: await update.message.delete()
         except: pass
     
     data = load_data()
     links = data.get("daily_links", [])
-    if not links:
-        try: await context.bot.send_message(chat_id=user.id, text="⚠️ Henüz paylaşılmış link yok.")
-        except: pass
-        return
-
-    res = "🚀 GÜNCEL LİSTE 🚀\n\n" + "\n".join([f"{i+1}. {l}" for i, l in enumerate(links)])
+    
+    # 2. Özelden listeyi gönder (DM)
     try:
-        # Üyeye özelden listeyi at
-        await context.bot.send_message(chat_id=user.id, text=res, disable_web_page_preview=True)
-        u_info = data["users"].setdefault(str(user.id), {"username": user.username or user.first_name, "links": 0, "list_count": 0})
-        u_info["list_count"] += 1
-        save_data(data)
+        if not links:
+            await context.bot.send_message(chat_id=user.id, text="⚠️ Henüz paylaşılmış link yok.")
+        else:
+            res = "🚀 GÜNCEL LİSTE 🚀\n\n" + "\n".join([f"{i+1}. {l}" for i, l in enumerate(links)])
+            await context.bot.send_message(chat_id=user.id, text=res, disable_web_page_preview=True)
+            u_info = data["users"].setdefault(str(user.id), {"username": user.username or user.first_name, "links": 0, "list_count": 0})
+            u_info["list_count"] += 1
+            save_data(data)
     except:
-        # DM kapalıysa gruptan uyar ve sil
+        # Botu başlatmamışsa gruptan uyar ve 5sn sonra sil
         if update.effective_chat.type != "private":
             m = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ @{user.username} Botu DM'den başlatmalısın!")
             await asyncio.sleep(5); await m.delete()
 
 async def hepsi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # 1. Grupta yazılmışsa anında sil (KİM YAZARSA YAZSIN)
+    chat_id = -1002361730040  # <--- BURAYA KENDİ GRUP ID'Nİ YAZARSAN DAHA SAĞLIKLI OLUR
+
+    # GRUPTA YAZILDIYSA: KİM OLURSA OLSUN SİL
     if update.effective_chat.type != "private":
         try: await update.message.delete()
         except: pass
         
-        # Sadece ADMIN ise DM gönder
-        member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
-        if member.status in ["administrator", "creator"]:
-            data = load_data()
-            if not data["users"]: return
-            rapor = "📊 **GÜNLÜK TAKİP RAPORU** 📊\n\n"
-            for uid, info in data["users"].items():
-                rapor += f"👤 @{info.get('username')}: {info.get('links')} Link - {info.get('list_count')} Liste\n"
-            try: await context.bot.send_message(chat_id=user_id, text=rapor)
-            except: pass
+    # ADMİNLİK KONTROLÜ (Gerek grupta gerek özelde)
+    try:
+        # Botun olduğu gruptaki yetkisini kontrol et
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        if member.status not in ["administrator", "creator"]:
+            return # Admin değilse hiçbir şey yapma, cevap verme
+    except:
+        # Eğer bot grup ID'sini bulamazsa veya hata alırsa güvenlik için cevap vermez
         return
 
-    # 2. Özelden yazılmışsa sadece admin kontrolü (İsteğe bağlı)
-    # Burada direkt atıyoruz çünkü zaten özeldesin
+    # SADECE ADMİN BURAYA GELEBİLİR
     data = load_data()
+    if not data["users"]:
+        await context.bot.send_message(chat_id=user_id, text="📊 Veri yok.")
+        return
+        
     rapor = "📊 **GÜNLÜK TAKİP RAPORU** 📊\n\n"
     for uid, info in data["users"].items():
         rapor += f"👤 @{info.get('username')}: {info.get('links')} Link - {info.get('list_count')} Liste\n"
-    await update.message.reply_text(rapor)
+    
+    await context.bot.send_message(chat_id=user_id, text=rapor)
 
 # --- ANA MESAJ FİLTRESİ ---
 
@@ -127,12 +134,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = message.text.strip()
     
-    # Sadece gruptaki mesajları filtrele
     if update.effective_chat.type != "private":
         member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
         is_admin = member.status in ["administrator", "creator"]
 
-        # Twitter Linki mi?
         if tweet_regex.match(text):
             data = load_data(); uid = str(user.id)
             if is_admin:
@@ -143,7 +148,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data.setdefault("msg_map", {}).setdefault(uid, []).append(sent.message_id); save_data(data)
                 return
             
-            # Üye için link sınırı (2)
             u_info = data["users"].get(uid, {"links": 0})
             if u_info["links"] >= 2:
                 try: await message.delete()
@@ -156,10 +160,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
             w_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🚨 Bekle! Destek vermelisin.\n🔗 Linkin: {text}", reply_markup=InlineKeyboardMarkup(kb))
             context.job_queue.run_once(lambda ctx: w_msg.delete() if uid in load_data()["waiting"] else None, when=WAITING_DELETE)
-        
         else:
-            # LİNK DEĞİLSE SİL (Admin dahil her şeyi temizler)
-            # Not: Komutlar (/liste, /hepsi) zaten kendi fonksiyonlarında siliniyor.
+            # Grupta link/komut harici her şeyi sil
             try: await message.delete()
             except: pass
 
