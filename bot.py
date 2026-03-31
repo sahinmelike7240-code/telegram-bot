@@ -9,10 +9,11 @@ DATA_FILE = "bot_stats.json"
 TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 WAITING_DELETE = 60
 
+# Kuralları da 1 link olacak şekilde güncelledim
 RULES_TEXT = (
     "🚀 X Etkileşim Grubu Kuralları\n\n"
     "🔹 Takip: Üyeler birbirini takip etmelidir.\n"
-    "🔹 Limit: Günde en fazla 2 gönderi paylaşılabilir.\n"
+    "🔹 Limit: Günde en fazla 1 gönderi paylaşabilirsiniz.\n"
     "🔹 Etkileşim: Beğeni + Kaydet ve anlamlı yorum şarttır.\n"
     "🔹 Liste: /liste yazarak linkleri DM alabilirsiniz."
 )
@@ -118,7 +119,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
     is_admin = member.status in ["administrator", "creator"]
 
-    # Eğer adminden gelen normal mesajsa dokunma (Konuşabilsin)
     if is_admin and not tweet_regex.match(text):
         if user.id not in load_data()["admins"]:
             d = load_data(); d["admins"].append(user.id); save_data(d)
@@ -134,14 +134,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data.setdefault("msg_map", {}).setdefault(uid, []).append(sent.message_id); save_data(data)
             return
         
+        # --- BURADA 2'DEN 1'E DÜŞÜRDÜK ---
         u_info = data["users"].get(uid, {"links": 0})
-        if u_info["links"] >= 2: return
+        if u_info["links"] >= 1: return
+        
         data["waiting"][uid] = text; save_data(data)
         kb = [[InlineKeyboardButton("✅ DESTEK VERDİM (ONAYLA)", callback_data=f"v_{uid}")]]
         w_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"🚨 Bekle! Destek vermelisin.\n🔗 Linkin: {text}", reply_markup=InlineKeyboardMarkup(kb))
         context.job_queue.run_once(lambda ctx: w_msg.delete() if uid in load_data()["waiting"] else None, when=WAITING_DELETE)
     else:
-        # Üye link harici bir şey yazarsa (komutlar dahil) sil
         if not is_admin:
             try: await message.delete()
             except: pass
@@ -178,4 +179,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
